@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Unity.Mathematics;
 using UnityEngine;
@@ -6,13 +7,15 @@ using Random = UnityEngine.Random;
 
 public class DiceMixer : MonoBehaviour
 {
-    [SerializeField] private GameObject diePrefab;
+    [SerializeField] private Rigidbody diePrefab;
     [SerializeField] [Range(0, 10)] private int dieCount;
 
     private const int ForceMultiplier = 20;
     private const int SpawnRadius = 10;
-    private Rigidbody[] _dice;
+    private readonly List<Rigidbody> _dice = new();
     private bool _inFlight;
+    private int _scoreAim;
+    private float _flightTime;
 
     private readonly (Func<Rigidbody, Vector3> vectorFunc, int score)[] _scores =
     {
@@ -23,6 +26,10 @@ public class DiceMixer : MonoBehaviour
         (x => -x.transform.up, 5),
         (x => -x.transform.forward, 6)
     };
+
+    public event Action<int> OnDieCountChange;
+    public event Action<int> OnScoreAimChange;
+    public event Action<int, RoundResult> OnScoreChange;
     
     private void Awake()
     {
@@ -33,35 +40,37 @@ public class DiceMixer : MonoBehaviour
         }
         
         CreateDice();
+        
+        OnDieCountChange?.Invoke(dieCount);
+        OnScoreAimChange?.Invoke(_scoreAim);
+        OnScoreChange?.Invoke(0, RoundResult.None);
     }
 
     private void Update()
     {
-        var isInFlight = _dice.Any(x => x.linearVelocity.sqrMagnitude > 1e-4 && x.angularVelocity.sqrMagnitude > 1e-4);
-        if (isInFlight != _inFlight && !isInFlight)
+        if (!_inFlight || Time.time - _flightTime < 0.3f)
         {
-            CalculateScore();
+            return;
         }
-        _inFlight = isInFlight;
-    }
 
-    private void CreateDice()
-    {
-        _dice = new Rigidbody[dieCount];
+        var isInFlight = _dice.Any(x => x.linearVelocity.sqrMagnitude > 1e-4 || x.angularVelocity.sqrMagnitude > 1e-4);
+        if (isInFlight)
+        {
+            return;
+        }
         
-        var spawnAngle = math.PI2 / dieCount;
-        for (var i = 0; i < dieCount; i++)
-        {
-            var die = Instantiate(diePrefab, transform);
-            _dice[i] = die.GetComponent<Rigidbody>();
-            
-            var cubeAngle = spawnAngle * i;
-            die.transform.localPosition = new Vector3(SpawnRadius * math.sin(cubeAngle), 0, SpawnRadius * math.cos(cubeAngle));
-        }
+        CalculateScore();
+        _inFlight = false;
     }
 
-    private void ThrowDice()
+    public void ThrowDice()
     {
+        if (_inFlight)
+        {
+            return;
+        }
+
+        _flightTime = Time.time;
         _inFlight = true;
         foreach (var die in _dice)
         {
@@ -75,6 +84,52 @@ public class DiceMixer : MonoBehaviour
                     ForceMultiplier * Random.Range(-1f, 1f),
                     ForceMultiplier * Random.Range(-1f, 1f)),
                 ForceMode.Impulse);
+        }
+    }
+
+    public void SetDieCount(string value)
+    {
+        if (!int.TryParse(value, out var parsedValue))
+        {
+            return;
+        }
+
+        dieCount = parsedValue;
+        OnDieCountChange?.Invoke(dieCount);
+        RecreateDice();
+    }
+    
+    public void SetScoreAim(string value)
+    {
+        if (!int.TryParse(value, out var parsedValue))
+        {
+            return;
+        }
+
+        _scoreAim = parsedValue;
+        OnScoreAimChange?.Invoke(_scoreAim);
+    }
+
+    private void RecreateDice()
+    {
+        foreach (var die in _dice)
+        {
+            Destroy(die.gameObject);
+        }
+        _dice.Clear();
+        CreateDice();
+    }
+        
+    private void CreateDice()
+    {
+        var spawnAngle = math.PI2 / dieCount;
+        for (var i = 0; i < dieCount; i++)
+        {
+            var die = Instantiate(diePrefab, transform);
+            _dice.Add(die);
+            
+            var cubeAngle = spawnAngle * i;
+            die.transform.localPosition = new Vector3(SpawnRadius * math.sin(cubeAngle), 0, SpawnRadius * math.cos(cubeAngle));
         }
     }
 
@@ -92,15 +147,22 @@ public class DiceMixer : MonoBehaviour
                 }
             }   
         }
+
+        var roundResult = RoundResult.Lose;
+        if (totalScore > _scoreAim)
+        {
+            roundResult = RoundResult.Win;
+        }
+        else if (totalScore == _scoreAim)
+        {
+            roundResult = RoundResult.Draw;
+        }
         
-        Debug.Log($"Total score: {totalScore}");
+        OnScoreChange?.Invoke(totalScore, roundResult);
     }
     
     private void OnRoll()
     {
-        if (!_inFlight)
-        {
-            ThrowDice();
-        }
+        ThrowDice();
     }
 }
